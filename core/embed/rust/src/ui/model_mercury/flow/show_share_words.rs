@@ -115,11 +115,13 @@ impl ShowShareWords {
             .with_vertical_pages()
             .map(|_| None);
 
-        let content_confirm =
-            Frame::left_aligned(text_confirm, PromptScreen::new_hold_to_confirm())
-                .with_footer(TR::instructions__hold_to_confirm.into(), None)
-                .with_swipe(SwipeDirection::Down, SwipeSettings::default())
-                .map(|_| Some(FlowMsg::Confirmed));
+        let content_confirm = Frame::left_aligned(
+            text_confirm,
+            SwipeContent::new(PromptScreen::new_hold_to_confirm()),
+        )
+        .with_footer(TR::instructions__hold_to_confirm.into(), None)
+        .with_swipe(SwipeDirection::Down, SwipeSettings::default())
+        .map(|_| Some(FlowMsg::Confirmed));
 
         let content_check_backup_intro = Frame::left_aligned(
             TR::reset__check_wallet_backup_title.into(),
