@@ -10,9 +10,10 @@ use crate::{
             text::paragraphs::{Paragraph, ParagraphSource, ParagraphVecShort, Paragraphs, VecExt},
             ButtonRequestExt, ComponentExt, SwipeDirection,
         },
+        constant::screen,
         flow::{base::Decision, flow_store, FlowMsg, FlowState, FlowStore, SwipeFlow},
         layout::obj::LayoutObj,
-        model_mercury::component::SwipeContent,
+        model_mercury::component::{Footer, InternallySwipableContent, SwipeContent},
     },
 };
 use heapless::Vec;
@@ -108,12 +109,16 @@ impl ShowShareWords {
         .one_button_request(ButtonRequestCode::ResetDevice.with_type("share_words"))
         .with_pages(move |_| nwords + 2);
 
-        let content_words = Frame::left_aligned(title, ShareWords::new(share_words_vec))
-            .with_subtitle(subtitle)
-            .with_swipe(SwipeDirection::Up, SwipeSettings::default())
-            .with_swipe(SwipeDirection::Down, SwipeSettings::default())
-            .with_vertical_pages()
-            .map(|_| None);
+        let content_words = Frame::left_aligned(
+            title,
+            InternallySwipableContent::new(ShareWords::new(share_words_vec))
+                .with_limited_area(screen().split_bottom(Footer::HEIGHT_SIMPLE).0),
+        )
+        .with_subtitle(subtitle)
+        .with_swipe(SwipeDirection::Up, SwipeSettings::default())
+        .with_swipe(SwipeDirection::Down, SwipeSettings::default())
+        .with_vertical_pages()
+        .map(|_| None);
 
         let content_confirm = Frame::left_aligned(
             text_confirm,

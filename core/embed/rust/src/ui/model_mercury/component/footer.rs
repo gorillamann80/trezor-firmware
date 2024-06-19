@@ -98,6 +98,14 @@ impl<'a> Footer<'a> {
             ..self
         }
     }
+
+    pub fn set_swipe_up(&mut self, allow: bool) {
+        self.swipe_allow_up = allow;
+    }
+
+    pub fn set_swipe_down(&mut self, allow: bool) {
+        self.swipe_allow_down = allow;
+    }
 }
 
 impl<'a> Component for Footer<'a> {
