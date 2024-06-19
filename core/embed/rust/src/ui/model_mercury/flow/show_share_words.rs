@@ -10,9 +10,10 @@ use crate::{
             text::paragraphs::{Paragraph, ParagraphSource, ParagraphVecShort, Paragraphs, VecExt},
             ButtonRequestExt, ComponentExt, SwipeDirection,
         },
+        constant::screen,
         flow::{base::Decision, flow_store, FlowMsg, FlowState, FlowStore, SwipeFlow},
         layout::obj::LayoutObj,
-        model_mercury::component::SwipeContent,
+        model_mercury::component::{Footer, InternallySwipableContent, SwipeContent},
     },
 };
 use heapless::Vec;

@@ -11,7 +11,7 @@ use crate::{
         },
         event::SwipeEvent,
         geometry::{Alignment, Alignment2D, Insets, Offset, Rect},
-        model_mercury::component::{Frame, FrameMsg},
+        model_mercury::component::{Frame, FrameMsg, InternallySwipable},
         shape::{self, Renderer},
         util,
     },
@@ -160,14 +160,14 @@ impl<'a> ShareWordsInner<'a> {
         self.page_index == self.share_words.len() as i16 - 1
     }
 
-    fn render_word<'s>(&self, word_index: i16, target: &mut impl Renderer<'s>) {
+    fn render_word<'s>(&self, word_index: i16, target: &mut impl Renderer<'s>, area: Rect) {
         // the share word
         if word_index >= self.share_words.len() as _ || word_index < 0 {
             return;
         }
         let word = self.share_words[word_index as usize];
-        let word_baseline = target.viewport().clip.center()
-            + Offset::y(theme::TEXT_SUPER.text_font.visible_text_height("A") / 2);
+        let word_baseline =
+            area.center() + Offset::y(theme::TEXT_SUPER.text_font.visible_text_height("A") / 2);
         word.map(|w| {
             shape::Text::new(word_baseline, w)
                 .with_font(theme::TEXT_SUPER.text_font)
@@ -200,16 +200,20 @@ impl<'a> Component for ShareWordsInner<'a> {
         match event {
             Event::Attach(_) => {
                 self.progress = 0;
+                self.footer.set_swipe_up(self.is_final_page());
+                self.footer.set_swipe_down(self.is_first_page());
             }
             Event::Swipe(SwipeEvent::End(dir)) => match dir {
                 SwipeDirection::Up if !self.is_final_page() => {
                     self.progress = 0;
                     self.page_index = (self.page_index + 1).min(self.share_words.len() as i16 - 1);
+                    self.footer.set_swipe_up(self.is_final_page());
                     ctx.request_paint();
                 }
                 SwipeDirection::Down if !self.is_first_page() => {
                     self.progress = 0;
                     self.page_index = self.page_index.saturating_sub(1);
+                    self.footer.set_swipe_down(self.is_first_page());
                     ctx.request_paint();
                 }
                 _ => {}
@@ -230,6 +234,8 @@ impl<'a> Component for ShareWordsInner<'a> {
             }
             _ => {}
         }
+
+        self.footer.event(ctx, event);
 
         None
     }
@@ -260,7 +266,16 @@ impl<'a> Component for ShareWordsInner<'a> {
             .with_fg(theme::GREY)
             .render(target);
 
-        if self.progress > 0 {
+        let (dir, should_animate) = if self.page_index < self.next_index {
+            (
+                SwipeDirection::Up,
+                self.page_index < self.share_words.len() as i16 - 1,
+            )
+        } else {
+            (SwipeDirection::Down, self.page_index > 0)
+        };
+
+        if self.progress > 0 && should_animate {
             target.in_clip(self.area_word, &|target| {
                 let progress = pareen::constant(0.0).seq_ease_out(
                     0.0,
@@ -270,26 +285,30 @@ impl<'a> Component for ShareWordsInner<'a> {
                 );
 
                 util::render_slide(
-                    |target| self.render_word(self.page_index, target),
-                    |target| self.render_word(self.next_index, target),
+                    |target| self.render_word(self.page_index, target, target.viewport().clip),
+                    |target| self.render_word(self.next_index, target, target.viewport().clip),
                     progress.eval(self.progress as f32 / 1000.0),
-                    if self.page_index < self.next_index {
-                        SwipeDirection::Up
-                    } else {
-                        SwipeDirection::Down
-                    },
+                    dir,
                     target,
                 )
             });
         } else {
-            target.in_clip(self.area_word, &|target| {
-                self.render_word(self.page_index, target);
-            })
+            self.render_word(self.page_index, target, self.area_word);
         };
     }
 
     #[cfg(feature = "ui_bounds")]
     fn bounds(&self, _sink: &mut dyn FnMut(Rect)) {}
+}
+
+impl InternallySwipable for ShareWords<'_> {
+    fn current_page(&self) -> usize {
+        self.page_index as usize
+    }
+
+    fn num_pages(&self) -> usize {
+        self.share_words.len()
+    }
 }
 
 #[cfg(feature = "ui_debug")]
