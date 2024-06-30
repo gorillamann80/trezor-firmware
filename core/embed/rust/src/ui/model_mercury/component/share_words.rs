@@ -200,20 +200,16 @@ impl<'a> Component for ShareWordsInner<'a> {
         match event {
             Event::Attach(_) => {
                 self.progress = 0;
-                self.footer.set_swipe_up(self.is_final_page());
-                self.footer.set_swipe_down(self.is_first_page());
             }
             Event::Swipe(SwipeEvent::End(dir)) => match dir {
                 SwipeDirection::Up if !self.is_final_page() => {
                     self.progress = 0;
                     self.page_index = (self.page_index + 1).min(self.share_words.len() as i16 - 1);
-                    self.footer.set_swipe_up(self.is_final_page());
                     ctx.request_paint();
                 }
                 SwipeDirection::Down if !self.is_first_page() => {
                     self.progress = 0;
                     self.page_index = self.page_index.saturating_sub(1);
-                    self.footer.set_swipe_down(self.is_first_page());
                     ctx.request_paint();
                 }
                 _ => {}
@@ -234,8 +230,6 @@ impl<'a> Component for ShareWordsInner<'a> {
             }
             _ => {}
         }
-
-        self.footer.event(ctx, event);
 
         None
     }
@@ -303,11 +297,11 @@ impl<'a> Component for ShareWordsInner<'a> {
 
 impl InternallySwipable for ShareWords<'_> {
     fn current_page(&self) -> usize {
-        self.page_index as usize
+        self.frame.inner().page_index as usize
     }
 
     fn num_pages(&self) -> usize {
-        self.share_words.len()
+        self.frame.inner().share_words.len()
     }
 }
 
