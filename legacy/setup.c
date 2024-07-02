@@ -31,6 +31,9 @@
 
 uint32_t __stack_chk_guard;
 
+// MCU clock 120 MHz
+uint32_t SystemCoreClock = 120000000;
+
 static inline void __attribute__((noreturn)) fault_handler(const char *line1) {
   layoutDialog(&bmp_icon_error, NULL, NULL, NULL, line1, "detected.", NULL,
                "Please unplug", "the device.", NULL);

@@ -88,22 +88,11 @@ const uint32_t V0_PIN_EMPTY = 1;
 // The total number of iterations to use in PBKDF2.
 #define PIN_ITER_COUNT 20000
 
-// The number of milliseconds required to execute PBKDF2.
-#define PIN_PBKDF2_MS 1280
+// The number of CPU cycles required to execute PBKDF2.
+#define PIN_PBKDF2_CYCLES 222000000
 
-// The number of milliseconds required to set the PIN.
-#if USE_OPTIGA
-#define PIN_SET_MS (PIN_PBKDF2_MS + OPTIGA_PIN_SET_MS)
-#else
-#define PIN_SET_MS PIN_PBKDF2_MS
-#endif
-
-// The number of milliseconds required to verify the PIN.
-#if USE_OPTIGA
-#define PIN_VERIFY_MS (PIN_PBKDF2_MS + OPTIGA_PIN_VERIFY_MS)
-#else
-#define PIN_VERIFY_MS PIN_PBKDF2_MS
-#endif
+// The minimum number of milliseconds between progress updates.
+#define MIN_PROGRESS_UPDATE_MS 100
 
 // The length of the hashed hardware salt in bytes.
 #define HARDWARE_SALT_SIZE SHA256_DIGEST_LENGTH
@@ -152,7 +141,8 @@ CONFIDENTIAL static secbool initialized = secfalse;
 CONFIDENTIAL static secbool unlocked = secfalse;
 static PIN_UI_WAIT_CALLBACK ui_callback = NULL;
 static uint32_t ui_total = 0;
-static uint32_t ui_rem = 0;
+static uint32_t ui_begin = 0;
+static uint32_t ui_next_update = 0;
 static enum storage_ui_message_t ui_message = NO_MSG;
 CONFIDENTIAL static uint8_t cached_keys[KEYS_SIZE] = {0};
 CONFIDENTIAL static uint8_t *const cached_dek = cached_keys;
@@ -458,30 +448,84 @@ static secbool is_not_wipe_code(const uint8_t *pin, size_t pin_len) {
   return sectrue;
 }
 
-static void ui_total_init(uint32_t total_ms) {
-  ui_total = total_ms;
-  ui_rem = total_ms;
+static uint32_t ui_estimate_time(storage_pin_op_t op) {
+#ifdef TREZOR_EMULATOR
+  // Returning 1 ms in the emulator should help to avoid flaky UI tests.
+  return 1;
+#else
+  uint32_t time_ms = 0;
+#if USE_OPTIGA
+  time_ms += optiga_estimate_time(op);
+#endif
+  extern uint32_t SystemCoreClock;
+  uint32_t pbkdf2_ms = PIN_PBKDF2_CYCLES / (SystemCoreClock / 1000);
+  switch (op) {
+    case STORAGE_PIN_OP_SET:
+      return time_ms + pbkdf2_ms;
+    case STORAGE_PIN_OP_VERIFY:
+      return time_ms + pbkdf2_ms;
+    case STORAGE_PIN_OP_CHANGE:
+      return time_ms + 2 * pbkdf2_ms;
+    default:
+      return 1;
+  }
+#endif
 }
 
-static void ui_total_add(uint32_t added_ms) {
-  ui_total += added_ms;
-  ui_rem += added_ms;
+static void ui_progress_init(storage_pin_op_t op) {
+  ui_total = ui_estimate_time(op);
+  ui_next_update = 0;
 }
 
-static secbool ui_progress(uint32_t elapsed_ms) {
-  ui_rem -= elapsed_ms;
-  if (ui_callback && ui_message) {
-    uint32_t progress = 0;
-    if (ui_total < 1000000) {
-      progress = 1000 * (ui_total - ui_rem) / ui_total;
-    } else {
-      // Avoid overflow. Precise enough.
-      progress = (ui_total - ui_rem) / (ui_total / 1000);
-    }
-    // Round the remaining time to the nearest second.
-    return ui_callback((ui_rem + 500) / 1000, progress, ui_message);
-  } else {
+static void ui_progress_add(uint32_t added_ms) { ui_total += added_ms; }
+
+static secbool ui_progress() {
+  if (ui_callback == NULL || ui_message == 0 ||
+      hal_ticks_ms() < ui_next_update) {
     return secfalse;
+  }
+
+  // The UI dialog is initialized by calling ui_callback() with progress = 0. If
+  // this is the first call, i.e. ui_next_update == 0, then make sure that
+  // progress comes out exactly 0. The +1 ensures that in subsequent calls
+  // progress comes out 999 in the emulator, which should help to avoid flaky UI
+  // tests.
+  uint32_t ui_current =
+      (ui_next_update == 0) ? 0 : hal_ticks_ms() - ui_begin + 1;
+
+  uint32_t progress = 0;
+  if (ui_total < 1000000) {
+    progress = 1000 * ui_current / ui_total;
+  } else {
+    // Avoid uint32 overflow. Precise enough.
+    progress = ui_current / (ui_total / 1000);
+  }
+
+  // Avoid reaching progress = 1000 or overflowing the total time, since calling
+  // ui_callback() with progress = 1000 terminates the UI dialog.
+  if (progress >= 1000) {
+    progress = 999;
+    ui_current = ui_total;
+  }
+
+  // Round the remaining time to the nearest second.
+  secbool ret =
+      ui_callback((ui_total - ui_current + 500) / 1000, progress, ui_message);
+
+  // The first call to ui_callback() can introduce some overhead, so we
+  // initialize ui_begin only after it has completed.
+  if (ui_next_update == 0) {
+    ui_begin = hal_ticks_ms();
+  }
+  ui_next_update = hal_ticks_ms() + MIN_PROGRESS_UPDATE_MS;
+
+  return ret;
+}
+
+static void ui_progress_finish(void) {
+  // The UI dialog is terminated by calling ui_callback() with progress = 1000.
+  if (ui_callback != NULL || ui_message != 0) {
+    ui_callback(0, 1000, ui_message);
   }
 }
 
@@ -506,11 +550,13 @@ static void derive_kek_v4(const uint8_t *pin, size_t pin_len,
     salt_len += EXTERNAL_SALT_SIZE;
   }
 
+  ui_progress();
+
   PBKDF2_HMAC_SHA256_CTX ctx = {0};
   pbkdf2_hmac_sha256_Init(&ctx, pin, pin_len, salt, salt_len, 1);
   for (int i = 1; i <= 5; i++) {
     pbkdf2_hmac_sha256_Update(&ctx, PIN_ITER_COUNT / 10);
-    ui_progress(PIN_PBKDF2_MS / 10);
+    ui_progress();
   }
 
 #ifdef STM32U5
@@ -527,7 +573,7 @@ static void derive_kek_v4(const uint8_t *pin, size_t pin_len,
   pbkdf2_hmac_sha256_Init(&ctx, pin, pin_len, salt, salt_len, 2);
   for (int i = 6; i <= 10; i++) {
     pbkdf2_hmac_sha256_Update(&ctx, PIN_ITER_COUNT / 10);
-    ui_progress(PIN_PBKDF2_MS / 10);
+    ui_progress();
   }
   pbkdf2_hmac_sha256_Final(&ctx, keiv);
 
@@ -563,13 +609,15 @@ static void stretch_pin(const uint8_t *pin, size_t pin_len,
     salt_len += EXTERNAL_SALT_SIZE;
   }
 
+  ui_progress();
+
   PBKDF2_HMAC_SHA256_CTX ctx = {0};
   pbkdf2_hmac_sha256_Init(&ctx, pin, pin_len, salt, salt_len, 1);
   memzero(&salt, sizeof(salt));
 
   for (int i = 1; i <= 10; i++) {
     pbkdf2_hmac_sha256_Update(&ctx, PIN_ITER_COUNT / 10);
-    ui_progress(PIN_PBKDF2_MS / 10);
+    ui_progress();
   }
 #ifdef STM32U5
   uint8_t stretched_pin_tmp[SHA256_DIGEST_LENGTH] = {0};
@@ -683,7 +731,6 @@ static secbool set_pin(const uint8_t *pin, size_t pin_len,
   uint8_t keiv[12] = {0};
   chacha20poly1305_ctx ctx = {0};
   random_buffer(rand_salt, STORAGE_SALT_SIZE);
-  ui_progress(0);
   ensure(derive_kek_set(pin, pin_len, rand_salt, ext_salt, kek),
          "derive_kek_set failed");
   rfc7539_init(&ctx, kek, keiv);
@@ -739,9 +786,10 @@ static void init_wiped_storage(void) {
   ensure(set_wipe_code(WIPE_CODE_EMPTY, WIPE_CODE_EMPTY_LEN),
          "set_wipe_code failed");
 
-  ui_total_init(PIN_SET_MS);
+  ui_progress_init(STORAGE_PIN_OP_SET);
   ui_message = PROCESSING_MSG;
   ensure(set_pin(PIN_EMPTY, PIN_EMPTY_LEN, NULL), "init_pin failed");
+  ui_progress_finish();
 }
 
 void storage_init(PIN_UI_WAIT_CALLBACK callback, const uint8_t *salt,
@@ -938,7 +986,7 @@ static secbool unlock(const uint8_t *pin, size_t pin_len,
   // In case of an upgrade from version 4 or earlier bump the total time of UI
   // progress to account for the set_pin() call in storage_upgrade_unlocked().
   if (get_lock_version() <= 4) {
-    ui_total_add(PIN_SET_MS);
+    ui_progress_add(ui_estimate_time(STORAGE_PIN_OP_SET));
   }
 
   // Now we can check for wipe code.
@@ -961,10 +1009,9 @@ static secbool unlock(const uint8_t *pin, size_t pin_len,
 
   // Sleep for 2^ctr - 1 seconds before checking the PIN.
   uint32_t wait = (1 << ctr) - 1;
-  ui_total_add(wait * 1000);
-  ui_progress(0);
+  ui_progress_add(wait * 1000);
   for (uint32_t i = 0; i < 10 * wait; i++) {
-    if (sectrue == ui_progress(100)) {
+    if (sectrue == ui_progress()) {
       memzero(&legacy_pin, sizeof(legacy_pin));
       return secfalse;
     }
@@ -995,10 +1042,10 @@ static secbool unlock(const uint8_t *pin, size_t pin_len,
       show_pin_too_many_screen();
     }
 
-    // Finish the countdown. Check for ui_rem underflow.
-    while (0 < ui_rem && ui_rem < ui_total) {
+    // Finish the countdown.
+    while (hal_ticks_ms() < ui_begin + ui_total) {
       ui_message = WRONG_PIN_MSG;
-      if (sectrue == ui_progress(100)) {
+      if (sectrue == ui_progress()) {
         return secfalse;
       }
       hal_delay(100);
@@ -1030,7 +1077,7 @@ secbool storage_unlock(const uint8_t *pin, size_t pin_len,
     return secfalse;
   }
 
-  ui_total_init(PIN_VERIFY_MS);
+  ui_progress_init(STORAGE_PIN_OP_VERIFY);
   if (pin_len == 0) {
     if (ui_message == NO_MSG) {
       ui_message = STARTING_MSG;
@@ -1040,7 +1087,10 @@ secbool storage_unlock(const uint8_t *pin, size_t pin_len,
   } else {
     ui_message = VERIFYING_PIN_MSG;
   }
-  return unlock(pin, pin_len, ext_salt);
+
+  secbool ret = unlock(pin, pin_len, ext_salt);
+  ui_progress_finish();
+  return ret;
 }
 
 /*
@@ -1326,20 +1376,26 @@ secbool storage_change_pin(const uint8_t *oldpin, size_t oldpin_len,
     return secfalse;
   }
 
-  ui_total_init(PIN_VERIFY_MS + PIN_SET_MS);
+  ui_progress_init(STORAGE_PIN_OP_CHANGE);
   ui_message =
       (oldpin_len != 0 && newpin_len == 0) ? VERIFYING_PIN_MSG : PROCESSING_MSG;
 
-  if (sectrue != unlock(oldpin, oldpin_len, old_ext_salt)) {
-    return secfalse;
+  secbool ret = unlock(oldpin, oldpin_len, old_ext_salt);
+  if (sectrue != ret) {
+    goto end;
   }
 
   // Fail if the new PIN is the same as the wipe code.
-  if (sectrue != is_not_wipe_code(newpin, newpin_len)) {
-    return secfalse;
+  ret = is_not_wipe_code(newpin, newpin_len);
+  if (sectrue != ret) {
+    goto end;
   }
 
-  return set_pin(newpin, newpin_len, new_ext_salt);
+  ret = set_pin(newpin, newpin_len, new_ext_salt);
+
+end:
+  ui_progress_finish();
+  return ret;
 }
 
 void storage_ensure_not_wipe_code(const uint8_t *pin, size_t pin_len) {
@@ -1374,14 +1430,19 @@ secbool storage_change_wipe_code(const uint8_t *pin, size_t pin_len,
     return secfalse;
   }
 
-  ui_total_init(PIN_VERIFY_MS);
+  ui_progress_init(STORAGE_PIN_OP_VERIFY);
   ui_message =
       (pin_len != 0 && wipe_code_len == 0) ? VERIFYING_PIN_MSG : PROCESSING_MSG;
 
-  secbool ret = secfalse;
-  if (sectrue == unlock(pin, pin_len, ext_salt)) {
-    ret = set_wipe_code(wipe_code, wipe_code_len);
+  secbool ret = unlock(pin, pin_len, ext_salt);
+  if (sectrue != ret) {
+    goto end;
   }
+
+  ret = set_wipe_code(wipe_code, wipe_code_len);
+
+end:
+  ui_progress_finish();
   return ret;
 }
 
@@ -1550,15 +1611,17 @@ static secbool storage_upgrade(void) {
     }
 
     // Set EDEK_PVC_KEY and PIN_NOT_SET_KEY.
-    ui_total_init(PIN_SET_MS);
-    ui_message = PROCESSING_MSG;
     uint8_t pin[V0_MAX_PIN_LEN] = {0};
     size_t pin_len = 0;
     secbool found = norcow_get(V0_PIN_KEY, &val, &len);
     if (sectrue == found && *(const uint32_t *)val != V0_PIN_EMPTY) {
       pin_len = int_to_pin(*(const uint32_t *)val, pin);
     }
+
+    ui_progress_init(STORAGE_PIN_OP_SET);
+    ui_message = PROCESSING_MSG;
     set_pin(pin, pin_len, NULL);
+    ui_progress_finish();
     memzero(pin, sizeof(pin));
 
     // Convert PIN failure counter.
