@@ -450,8 +450,7 @@ static secbool is_not_wipe_code(const uint8_t *pin, size_t pin_len) {
 
 static uint32_t ui_estimate_time(storage_pin_op_t op) {
 #ifdef TREZOR_EMULATOR
-  // Returning 1 ms in the emulator should help to avoid flaky UI tests.
-  return 1;
+  return 500;
 #else
   uint32_t time_ms = 0;
 #if USE_OPTIGA
@@ -480,46 +479,46 @@ static void ui_progress_init(storage_pin_op_t op) {
 static void ui_progress_add(uint32_t added_ms) { ui_total += added_ms; }
 
 static secbool ui_progress() {
-  if (ui_callback == NULL || ui_message == 0 ||
-      hal_ticks_ms() < ui_next_update) {
+  uint32_t now = hal_ticks_ms();
+  if (ui_callback == NULL || ui_message == 0 || now < ui_next_update) {
     return secfalse;
   }
 
   // The UI dialog is initialized by calling ui_callback() with progress = 0. If
   // this is the first call, i.e. ui_next_update == 0, then make sure that
-  // progress comes out exactly 0. The +1 ensures that in subsequent calls
-  // progress comes out 999 in the emulator, which should help to avoid flaky UI
-  // tests.
-  uint32_t ui_current =
-      (ui_next_update == 0) ? 0 : hal_ticks_ms() - ui_begin + 1;
+  // progress comes out exactly 0.
+  if (ui_next_update == 0) {
+    ui_begin = now;
+  }
+  ui_next_update = now + MIN_PROGRESS_UPDATE_MS;
+  uint32_t ui_elapsed = now - ui_begin;
 
+  // Round the remaining time to the nearest second.
+  uint32_t ui_rem_sec = (ui_total - ui_elapsed + 500) / 1000;
+
+#ifndef TREZOR_EMULATOR
   uint32_t progress = 0;
   if (ui_total < 1000000) {
-    progress = 1000 * ui_current / ui_total;
+    progress = 1000 * ui_elapsed / ui_total;
   } else {
     // Avoid uint32 overflow. Precise enough.
-    progress = ui_current / (ui_total / 1000);
+    progress = ui_elapsed / (ui_total / 1000);
   }
+#else
+  // In the emulator we derive the progress from the number of remaining seconds
+  // to avoid flaky UI tests.
+  uint32_t ui_total_sec = (ui_total + 500) / 1000;
+  uint32_t progress = 1000 - 1000 * ui_rem_sec / ui_total_sec;
+#endif
 
   // Avoid reaching progress = 1000 or overflowing the total time, since calling
   // ui_callback() with progress = 1000 terminates the UI dialog.
   if (progress >= 1000) {
     progress = 999;
-    ui_current = ui_total;
+    ui_elapsed = ui_total;
   }
 
-  // Round the remaining time to the nearest second.
-  secbool ret =
-      ui_callback((ui_total - ui_current + 500) / 1000, progress, ui_message);
-
-  // The first call to ui_callback() can introduce some overhead, so we
-  // initialize ui_begin only after it has completed.
-  if (ui_next_update == 0) {
-    ui_begin = hal_ticks_ms();
-  }
-  ui_next_update = hal_ticks_ms() + MIN_PROGRESS_UPDATE_MS;
-
-  return ret;
+  return ui_callback(ui_rem_sec, progress, ui_message);
 }
 
 static void ui_progress_finish(void) {
@@ -549,8 +548,6 @@ static void derive_kek_v4(const uint8_t *pin, size_t pin_len,
     memcpy(salt + salt_len, ext_salt, EXTERNAL_SALT_SIZE);
     salt_len += EXTERNAL_SALT_SIZE;
   }
-
-  ui_progress();
 
   PBKDF2_HMAC_SHA256_CTX ctx = {0};
   pbkdf2_hmac_sha256_Init(&ctx, pin, pin_len, salt, salt_len, 1);
@@ -608,8 +605,6 @@ static void stretch_pin(const uint8_t *pin, size_t pin_len,
     memcpy(salt + salt_len, ext_salt, EXTERNAL_SALT_SIZE);
     salt_len += EXTERNAL_SALT_SIZE;
   }
-
-  ui_progress();
 
   PBKDF2_HMAC_SHA256_CTX ctx = {0};
   pbkdf2_hmac_sha256_Init(&ctx, pin, pin_len, salt, salt_len, 1);
@@ -1008,9 +1003,12 @@ static secbool unlock(const uint8_t *pin, size_t pin_len,
   }
 
   // Sleep for 2^ctr - 1 seconds before checking the PIN.
-  uint32_t wait = (1 << ctr) - 1;
-  ui_progress_add(wait * 1000);
-  for (uint32_t i = 0; i < 10 * wait; i++) {
+  uint32_t wait_ms = 1000 * ((1 << ctr) - 1);
+  ui_progress_add(wait_ms);
+  ui_progress();
+
+  uint32_t begin = hal_ticks_ms();
+  while (hal_ticks_ms() - begin < wait_ms) {
     if (sectrue == ui_progress()) {
       memzero(&legacy_pin, sizeof(legacy_pin));
       return secfalse;
@@ -1043,7 +1041,7 @@ static secbool unlock(const uint8_t *pin, size_t pin_len,
     }
 
     // Finish the countdown.
-    while (hal_ticks_ms() < ui_begin + ui_total) {
+    while (hal_ticks_ms() - ui_begin < ui_total) {
       ui_message = WRONG_PIN_MSG;
       if (sectrue == ui_progress()) {
         return secfalse;
