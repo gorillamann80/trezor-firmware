@@ -450,6 +450,7 @@ static secbool is_not_wipe_code(const uint8_t *pin, size_t pin_len) {
 
 static uint32_t ui_estimate_time(storage_pin_op_t op) {
 #ifdef TREZOR_EMULATOR
+  (void)op;
   return 500;
 #else
   uint32_t time_ms = 0;
@@ -478,7 +479,7 @@ static void ui_progress_init(storage_pin_op_t op) {
 
 static void ui_progress_add(uint32_t added_ms) { ui_total += added_ms; }
 
-static secbool ui_progress() {
+static secbool ui_progress(void) {
   uint32_t now = hal_ticks_ms();
   if (ui_callback == NULL || ui_message == 0 || now < ui_next_update) {
     return secfalse;
@@ -523,7 +524,7 @@ static secbool ui_progress() {
 
 static void ui_progress_finish(void) {
   // The UI dialog is terminated by calling ui_callback() with progress = 1000.
-  if (ui_callback != NULL || ui_message != 0) {
+  if (ui_callback != NULL && ui_message != 0) {
     ui_callback(0, 1000, ui_message);
   }
 }
