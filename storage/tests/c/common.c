@@ -20,9 +20,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "common.h"
+
+static uint32_t ticks_ms = 0;
 
 void __shutdown(void) {
   printf("SHUTDOWN\n");
@@ -42,10 +43,6 @@ void __fatal_error(const char *msg, const char *file, int line) {
 
 void show_wipe_code_screen(void) {}
 void show_pin_too_many_screen(void) {}
-uint32_t hal_ticks_ms(void) {
-  struct timespec t = {0};
-  clock_gettime(CLOCK_MONOTONIC, &t);
 
-  uint32_t msec = t.tv_sec * 1000 + (t.tv_nsec / 1000000);
-  return msec;
-}
+void hal_delay(uint32_t delay_ms) { ticks_ms += delay_ms; }
+uint32_t hal_ticks_ms(void) { return ticks_ms; }
