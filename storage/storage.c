@@ -31,6 +31,7 @@
 #include "sha2.h"
 #include "storage.h"
 #include "storage_utils.h"
+#include "time_estimate.h"
 
 #if USE_OPTIGA
 #include "optiga.h"
@@ -87,9 +88,6 @@ const uint32_t V0_PIN_EMPTY = 1;
 
 // The total number of iterations to use in PBKDF2.
 #define PIN_ITER_COUNT 20000
-
-// The number of CPU cycles required to execute PBKDF2.
-#define PIN_PBKDF2_CYCLES 222000000
 
 // The minimum number of milliseconds between progress updates.
 #define MIN_PROGRESS_UPDATE_MS 100
@@ -448,32 +446,30 @@ static secbool is_not_wipe_code(const uint8_t *pin, size_t pin_len) {
   return sectrue;
 }
 
-static uint32_t ui_estimate_time(storage_pin_op_t op) {
-#ifdef TREZOR_EMULATOR
-  (void)op;
-  return 500;
-#else
+static uint32_t ui_estimate_time_ms(storage_pin_op_t op) {
   uint32_t time_ms = 0;
 #if USE_OPTIGA
-  time_ms += optiga_estimate_time(op);
+  time_ms += optiga_estimate_time_ms(op);
 #endif
-  extern uint32_t SystemCoreClock;
-  uint32_t pbkdf2_ms = PIN_PBKDF2_CYCLES / (SystemCoreClock / 1000);
+
+  uint32_t pbkdf2_ms = time_estimate_pbkdf2_ms(PIN_ITER_COUNT);
   switch (op) {
     case STORAGE_PIN_OP_SET:
-      return time_ms + pbkdf2_ms;
     case STORAGE_PIN_OP_VERIFY:
-      return time_ms + pbkdf2_ms;
+      time_ms += pbkdf2_ms;
+      break;
     case STORAGE_PIN_OP_CHANGE:
-      return time_ms + 2 * pbkdf2_ms;
+      time_ms += 2 * pbkdf2_ms;
+      break;
     default:
       return 1;
   }
-#endif
+
+  return time_ms;
 }
 
 static void ui_progress_init(storage_pin_op_t op) {
-  ui_total = ui_estimate_time(op);
+  ui_total = ui_estimate_time_ms(op);
   ui_next_update = 0;
 }
 
@@ -985,7 +981,7 @@ static secbool unlock(const uint8_t *pin, size_t pin_len,
   // In case of an upgrade from version 4 or earlier bump the total time of UI
   // progress to account for the set_pin() call in storage_upgrade_unlocked().
   if (get_lock_version() <= 4) {
-    ui_progress_add(ui_estimate_time(STORAGE_PIN_OP_SET));
+    ui_progress_add(ui_estimate_time_ms(STORAGE_PIN_OP_SET));
   }
 
   // Now we can check for wipe code.

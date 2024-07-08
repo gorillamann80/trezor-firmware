@@ -190,7 +190,7 @@ void optiga_set_sec_max(void) {
                    sizeof(invalid_point), buffer, sizeof(buffer), &size);
 }
 
-uint32_t optiga_estimate_time(storage_pin_op_t op) {
+uint32_t optiga_estimate_time_ms(storage_pin_op_t op) {
   uint8_t sec = 0;
   if (!optiga_read_sec(&sec)) {
     return UINT32_MAX;
