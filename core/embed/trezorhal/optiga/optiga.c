@@ -200,8 +200,15 @@ uint32_t optiga_estimate_time(storage_pin_op_t op) {
   // maximum of 255.
   sec = (sec < 255 - 4) ? sec + 4 : 255;
 
+  // If the SEC is above 127, then Optiga introduces a throttling delay before
+  // the execution of each protected command. The delay grows propotionally to
+  // the SEC value up to a maximum delay of OPTIGA_T_MAX_MS.
   uint32_t throttling_delay =
       sec > 127 ? (sec - 127) * OPTIGA_T_MAX_MS / 128 : 0;
+
+  // To estimate the overall time of the PIN operation we multiply the
+  // throttling delay by the number of protected Optiga commands and add the
+  // time required to execute all Optiga commands without throttling delays.
   switch (op) {
     case STORAGE_PIN_OP_SET:
       return throttling_delay * 6 + 1300;
