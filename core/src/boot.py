@@ -99,11 +99,8 @@ async def bootscreen() -> None:
             utils.halt(e.__class__.__name__)
 
 
-if utils.USE_OPTIGA and (optiga.get_sec() or 0) > 150:
-    # Show automated PIN messages when Optiga throttling delays are active.
-    allow_all_loader_messages()
-else:
-    # Ignore all automated PIN messages in the boot-phase (turned off in `bootscreen()`).
+# Ignore all automated PIN messages in the boot-phase (turned off in `bootscreen()`), unless Optiga throttling delays are active.
+if not utils.USE_OPTIGA or (optiga.get_sec() or 0) < 150:
     ignore_nonpin_loader_messages()
 
 config.init(show_pin_timeout)
